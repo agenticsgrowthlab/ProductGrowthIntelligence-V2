@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto';
 import {neon} from '@neondatabase/serverless';
 export default async function handler(req,res){
  res.setHeader('Cache-Control','no-store');
@@ -10,6 +11,11 @@ export default async function handler(req,res){
  if(!process.env.DATABASE_URL)return res.status(503).json({error:'Demo database is unavailable'});
  try{
  const sql=neon(process.env.DATABASE_URL);
+ await sql`CREATE TABLE IF NOT EXISTS pgos_demo_chat_limits (visitor_hash TEXT NOT NULL, hour_bucket TIMESTAMPTZ NOT NULL, total INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(visitor_hash,hour_bucket))`;
+ const visitor=String(req.headers['x-forwarded-for']||req.headers['x-real-ip']||'anonymous').split(',')[0].trim().slice(0,128);
+ const hash=createHash('sha256').update(visitor+':'+process.env.OPENAI_API_KEY).digest('hex');
+ const allowed=await sql`INSERT INTO pgos_demo_chat_limits(visitor_hash,hour_bucket,total) VALUES(${hash},date_trunc('hour',NOW()),1) ON CONFLICT(visitor_hash,hour_bucket) DO UPDATE SET total=pgos_demo_chat_limits.total+1 WHERE pgos_demo_chat_limits.total<12 RETURNING total`;
+ if(!allowed.length)return res.status(429).json({error:'Demo Chatty reached the hourly message limit. Please try later.'});
  const [tenants,objectives,initiatives,projects,releases,kpis]=await Promise.all([
  sql`SELECT id,name,mission,vision,north_star FROM pgos_tenants WHERE id=${tenantId} AND data_mode='demo'`,
  sql`SELECT title,progress,owner FROM pgos_objectives WHERE tenant_id=${tenantId} AND is_demo=TRUE ORDER BY id`,
